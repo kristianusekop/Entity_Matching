@@ -4,21 +4,32 @@
  #Outcome
   #Entity map table which consist of phone number & PDAM ID data to be used as master table to unify transaction data from Alterra Bills & BSA data
  #Input
-  #BSA user data and Alterra Bills transaction data from Jan-Jul 2020
+  #BSA user data and Alterra Bills monthly transaction data 
+ #Statistics
+  #Jaro-Winkler distance
  
 #Setup the required library
 library(dplyr)
 library(reclin)
 library(RPostgreSQL)
 library(dbplyr)
+library(DBI)
+library(bigrquery)
+
+#Database access setup
+bq_auth(path=Sys.getenv("bigQueryProd"))
+projectID<-"data-platform-bq"
+
 
 #Gather PDAM user data
  #From notelp field
-query1<-"select nosamb as PDAMID,notelp as phone from `data-platform-bq.bsa_raw.master_pelanggan` where notelp!='-' and notelp!='';"
+query1<-"select nosamb as PDAMID,notelp as phone from `data-platform-bq.bsa_raw.master_pelanggan` where notelp!='-' and notelp!='' and 
+extract(year from created)=extract(year from current_date()) and extract(month from created)=extract(month from (date_sub(current_date(),interval 1 month)));"
 PDAMUser<-bq_table_download(bq_project_query(projectID,query1))
 
  #From nohp field
-query1.1<-"select nosamb as PDAMID,nohp as phone from `data-platform-bq.bsa_raw.master_pelanggan` where nohp!='-' and nohp!='';"
+query1.1<-"select nosamb as PDAMID,nohp as phone from `data-platform-bq.bsa_raw.master_pelanggan` where nohp!='-' and nohp!='' and 
+extract(year from created)=extract(year from current_date()) and extract(month from created)=extract(month from (date_sub(current_date(),interval 1 month)));"
 PDAMUser1<-bq_table_download(bq_project_query(projectID,query1.1))
 
  #Bind the data
@@ -29,40 +40,12 @@ PDAMUserA<-unique(PDAMUserA)
 PDAMUserA<-filter(PDAMUserA,phone!='0')
 
 #Gather Alterra Bills user data
- #January data
-query2<-"select customer_id as phone, operator_code as operator from `data-platform-bq.kraken_norm.kraken_merge_transaction` where cast(extract(year from created_at)as string)='2020' and cast(extract(month from created_at)as string)='1' and product_type in ('mobile','mobile_postpaid','data');"
+ #Last one month data
+query2<-"select customer_id as phone, operator_code as operator from `data-platform-bq.kraken_norm.kraken_merge_transaction` where extract(year from created_at)=extract(year from current_date()) and extract(month from created_at)=extract(month from (date_sub(current_date(),interval 1 month))) and product_type in ('mobile','mobile_postpaid','data');"
 BPAUser<-bq_table_download(bq_project_query(projectID,query2))
 
- #February data
-query3<-"select customer_id as phone, operator_code as operator from `data-platform-bq.kraken_norm.kraken_merge_transaction` where cast(extract(year from created_at)as string)='2020' and cast(extract(month from created_at)as string)='2' and product_type in ('mobile','mobile_postpaid','data');"
-BPAUser2<-bq_table_download(bq_project_query(projectID,query3))
-
- #March data
-query4<-"select customer_id as phone, operator_code as operator from `data-platform-bq.kraken_norm.kraken_merge_transaction` where cast(extract(year from created_at)as string)='2020' and cast(extract(month from created_at)as string)='3' and product_type in ('mobile','mobile_postpaid','data');"
-BPAUser3<-bq_table_download(bq_project_query(projectID,query4))
-
- #April data
-query5<-"select customer_id as phone, operator_code as operator from `data-platform-bq.kraken_norm.kraken_merge_transaction` where cast(extract(year from created_at)as string)='2020' and cast(extract(month from created_at)as string)='4' and product_type in ('mobile','mobile_postpaid','data');"
-BPAUser4<-bq_table_download(bq_project_query(projectID,query5))
-
- #May data
-query6<-"select customer_id as phone, operator_code as operator from `data-platform-bq.kraken_norm.kraken_merge_transaction` where cast(extract(year from created_at)as string)='2020' and cast(extract(month from created_at)as string)='5' and product_type in ('mobile','mobile_postpaid','data');"
-BPAUser5<-bq_table_download(bq_project_query(projectID,query6))
-
- #June data
-query7<-"select customer_id as phone, operator_code as operator from `data-platform-bq.kraken_norm.kraken_merge_transaction` where cast(extract(year from created_at)as string)='2020' and cast(extract(month from created_at)as string)='6' and product_type in ('mobile','mobile_postpaid','data');"
-BPAUser6<-bq_table_download(bq_project_query(projectID,query7))
-
- #July data
-query8<-"select customer_id as phone, operator_code as operator from `data-platform-bq.kraken_norm.kraken_merge_transaction` where cast(extract(year from created_at)as string)='2020' and cast(extract(month from created_at)as string)='7' and product_type in ('mobile','mobile_postpaid','data');"
-BPAUser7<-bq_table_download(bq_project_query(projectID,query8))
-
-#Combine the user data
-BPAUserA<-rbind(BPAUser,BPAUser2,BPAUser3,BPAUser4,BPAUser5,BPAUser6,BPAUser7)
 #Dedup the combined user data
-BPAUserA1<-unique(BPAUserA)%>%data_frame()
- #Rename the customer ID field to be phone
-colnames(BPAUserA1)<-"phone"
+BPAUserA1<-unique(BPAUser)%>%data_frame()
 
 #Add operator field in PDAM user data as linkage pair key
 PDAMUserA<-merge(x=PDAMUserA,y=BPAUserA1,by="phone",all.x=T)
@@ -78,7 +61,7 @@ PDAMUserA<-PDAMUserA[,c(4,1,2,3)]
 
 #record linkage
  #use phone as blocking parameter
-pb<-pair_blocking(BPAUserA1,PDAMUserA,"phone",large=F)
+pb<-pair_blocking(PDAMUserA,BPAUserA1,"phone",large=F)
 
 #compare pairs
  #Binary comparison using oparator as linkage pair key
@@ -92,7 +75,7 @@ mp<-problink_em(pb)
  #scoring using the m & u probability model
 pb<-score_problink(pb,model=mp,var="weight")
  #select pairs using threshold (0.02)
-pb<-select_threshold(pb,"weight",var="threshold",threshold=0.02)
+pb<-select_threshold(pb,"operator",var="threshold",threshold=0.7)
  #add original pair id to evaluate the model
 pb<- add_from_x(pb,id_x="id")
 pb<-add_from_y(pb,id_y="id")
@@ -101,22 +84,43 @@ pb$true<-pb$id_x==pb$x
  #form confusion matrix
 table(as.data.frame(pb[c("true","threshold")]))
  #One to one linkage mapping using greeedy selection and n to m method
-pb<-select_greedy(pb,"weight",var="greedy",threshold=0)
+pb<-select_greedy(pb,"operator",var="greedy",threshold=0.7)
 table(as.data.frame(pb[c("true","greedy")]))
-pb<-select_n_to_m(pb,"weight",var="ntom",threshold=0)
+pb<-select_n_to_m(pb,"operator",var="ntom",threshold=0.7)
 table(as.data.frame(pb[c("true","ntom")]))
 
 #Obtain linked dataset
-linkedData<-link(pb)
+linkedData<-link(pb) 
 
 #Subset linked-only data
 linkedDataF<-filter(linkedData,is.na(linkedData$id.x)==F&is.na(linkedData$id.y)==F)
 
+#Add created at field
+linkedDataF$created_at<-as.POSIXct(Sys.time(),"%Y-%m-%d %H:%M:%S")
+
 #Rearrange the data
-linkedDataF<-linkedDataF[,c(2,3,6)]
-linkedDataF$id<-seq(1,nrow(linkedDataF),by=1)
-linkedDataF<-linkedDataF[,c(4,1:3)]
-colnames(linkedDataF)<-c("id","phone","operator","PDAM_ID")
+linkedDataF<-linkedDataF[,c(2,3,7,8)]
+
+#Obtain latest id
+con <- DBI::dbConnect(RPostgreSQL::PostgreSQL(),    
+                      host = "trxhourly.cmqarwvv5fja.us-east-1.rds.amazonaws.com",   
+                      port = 5432,   
+                      dbname = "postgres",   
+                      user = Sys.getenv('projdbuser'),   
+                      password = Sys.getenv('projdbpass') )
+
+maxIdHQuery<-dbSendQuery(con,'select max(id) from public."EMStat"')
+maxIdH<-as.data.frame(dbFetch(maxIdHQuery))
+dbDisconnect(con)
+
+idsH<-maxIdH$max+1
+ideH<-maxIdH$max+nrow(linkedDataF)
+ideH-idsH
+#Add id to linked data frame
+linkedDataF$id<-seq(idsH,ideH,by=1)
+
+linkedDataF<-linkedDataF[,c(5,1:4)]
+colnames(linkedDataF)[c(1:4)]<-c("id","phone","operator","PDAM_ID")
 
 #Insert to database
 con <- DBI::dbConnect(RPostgreSQL::PostgreSQL(),    
@@ -125,8 +129,6 @@ con <- DBI::dbConnect(RPostgreSQL::PostgreSQL(),
                       dbname = "postgres",   
                       user = Sys.getenv('projdbuser'),   
                       password = Sys.getenv('projdbpass') )
-
-dbWriteTable(con,"EMStat",value=linkedDataF,overwrite=T,append=F,row.names=FALSE)
-#db_insert_into(con,"transactionhistory",value=telcoHistDIndosat)
+db_insert_into(con,"transactionhistory",value=telcoHistDIndosat)
 
 dbDisconnect(con)
